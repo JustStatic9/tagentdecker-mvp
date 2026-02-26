@@ -9,9 +9,7 @@ type POI = {
   category: string;
 };
 
-function randomItem<T>(items: T[]): T {
-  return items[Math.floor(Math.random() * items.length)];
-}
+// helper removed: not used
 function distance(a: POI, b: POI) {
   const dx = a.lat - b.lat;
   const dy = a.lon - b.lon;
@@ -19,127 +17,70 @@ function distance(a: POI, b: POI) {
 }
 export async function POST(req: Request) {
   try {
-    const { lat, lon, radius, mood } = await req.json();
-    const cacheKey = `${mood}-${lat}-${lon}-${radius}`;
+    const { lat, lon, mood } = await req.json();
+    const baseCacheKey = `${mood}-${lat}-${lon}`;
 
     let pois: POI[] = [];
 
     // -------------------------
     // 1️⃣ CACHE CHECK
     // -------------------------
-    if (cache.has(cacheKey)) {
-      console.log("POI Cache hit");
-      pois = cache.get(cacheKey)!;
-    } else {
-      // -------------------------
-      // 2️⃣ KATEGORIEN
-      // -------------------------
-      let categories: string[] = [];
-
-      if (mood === "Genuss") {
-        categories = ["restaurant", "bar", "cafe", "pub", "biergarten"];
-      }
-
-      if (mood === "Natur") {
-        categories = ["park", "garden", "viewpoint"];
-      }
-
-      if (mood === "Kultur") {
-        categories = ["museum", "theatre", "gallery", "attraction", "artwork"];
-      }
-
-      if (mood === "Entspannt") {
-        categories = ["cafe", "park", "garden", "viewpoint", "ice_cream"];
-      }
-
-      const categoryString = categories.join("|");
-
-      const overpassQuery = `
-        [out:json][timeout:15];
-        (
-          node["amenity"~"${categoryString}"](around:${radius},${lat},${lon});
-          node["leisure"~"${categoryString}"](around:${radius},${lat},${lon});
-          node["tourism"~"${categoryString}"](around:${radius},${lat},${lon});
-        );
-        out;
-      `;
-
-      console.log("OVERPASS FETCH START");
-
-      let response = await fetch(
-        "https://overpass-api.de/api/interpreter",
-        {
-          method: "POST",
-          body: overpassQuery,
-        }
-      );
-
-      // -------------------------
-      // 3️⃣ RETRY BEI 429
-      // -------------------------
-      if (response.status === 429) {
-        console.warn("Rate limited. Retry in 1500ms...");
-        await new Promise((r) => setTimeout(r, 1500));
-
-        console.log("OVERPASS FETCH RETRY");
-
-        response = await fetch(
-          "https://overpass-api.de/api/interpreter",
-          {
-            method: "POST",
-            body: overpassQuery,
-          }
-        );
-      }
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("Overpass Status:", response.status);
-        console.error("Overpass Antwort:", errorText);
-
-        return NextResponse.json({
-          error: `Overpass HTTP Fehler (${response.status})`,
-        });
-      }
-
-      const text = await response.text();
-
-      if (text.trim().startsWith("<")) {
-        console.error("Overpass XML Antwort:", text);
-        return NextResponse.json({
-          error: "Overpass XML Fehler",
-        });
-      }
-
-      const data = JSON.parse(text);
-
-      pois = data.elements
-        .filter((el: any) => el.tags?.name)
-        .map((el: any) => ({
-          id: el.id,
-          name: el.tags.name,
-          lat: el.lat,
-          lon: el.lon,
-          category:
-            el.tags.amenity ||
-            el.tags.leisure ||
-            el.tags.tourism ||
-            "unknown",
-        }));
-
-      console.log("POIs gefunden:", pois.length);
-
-      cache.set(cacheKey, pois);
-    }
-
     // -------------------------
-    // 4️⃣ ROUTENLOGIK
-    // -------------------------
-    if (pois.length < 3) {
-      return NextResponse.json({
-        error: "Nicht genug POIs gefunden",
-      });
-    }
+// 1️⃣ KATEGORIEN
+// -------------------------
+let categories: string[] = [];
+
+if (mood === "Genuss") {
+  categories = ["restaurant", "bar", "cafe", "pub", "biergarten"];
+}
+
+if (mood === "Natur") {
+  categories = ["park", "garden", "viewpoint"];
+}
+
+if (mood === "Kultur") {
+  categories = ["museum", "theatre", "gallery", "attraction", "artwork"];
+}
+
+if (mood === "Entspannt") {
+  categories = ["cafe", "park", "garden", "viewpoint", "ice_cream"];
+}
+
+// -------------------------
+// 2️⃣ ADAPTIVER RADIUS
+// -------------------------
+let radiusToUse = 2000;
+let cacheKey = `${baseCacheKey}-${radiusToUse}`;
+
+if (cache.has(cacheKey)) {
+  console.log("POI Cache hit (2000m)");
+  pois = cache.get(cacheKey)!;
+} else {
+  pois = await fetchPOIs(lat, lon, radiusToUse, categories);
+  cache.set(cacheKey, pois);
+}
+
+// 🔁 Fallback wenn zu wenig Ergebnisse
+if (pois.length < 3) {
+  radiusToUse = 4000;
+  cacheKey = `${baseCacheKey}-${radiusToUse}`;
+
+  if (cache.has(cacheKey)) {
+    console.log("POI Cache hit (4000m)");
+    pois = cache.get(cacheKey)!;
+  } else {
+    console.log("Zu wenige POIs – erhöhe Radius auf 4000m");
+    pois = await fetchPOIs(lat, lon, radiusToUse, categories);
+    cache.set(cacheKey, pois);
+  }
+}
+
+// ❌ Immer noch zu wenig
+if (pois.length < 3) {
+  return NextResponse.json({
+    error: "Hier gibt es gerade zu wenig passende Orte in deiner Nähe."
+  });
+}
 
     const shuffled = [...pois].sort(() => Math.random() - 0.5);
     const start = shuffled[0];
@@ -166,4 +107,44 @@ export async function POST(req: Request) {
     console.error(error);
     return NextResponse.json({ error: "Fehler bei Generierung" });
   }
+  async function fetchPOIs(
+  lat: number,
+  lon: number,
+  radius: number,
+  categories: string[]
+): Promise<POI[]> {
+
+  const categoryRegex = categories.join("|");
+
+const query = `
+  [out:json][timeout:10];
+  node["amenity"~"${categoryRegex}"]
+  (around:${radius},${lat},${lon});
+  out body 50;
+`;
+
+  const response = await fetch(
+    "https://overpass-api.de/api/interpreter",
+    {
+      method: "POST",
+      body: query,
+    }
+  );
+
+  if (!response.ok) {
+    console.error(`Overpass Fehler: ${response.status}`);
+  return [];
+  }
+
+  const data = await response.json();
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return data.elements.map((el: any) => ({
+    id: el.id,
+    name: el.tags?.name || "Unbenannter Ort",
+    lat: el.lat,
+    lon: el.lon,
+    category: el.tags?.amenity || "unknown",
+  }));
+}
 }
