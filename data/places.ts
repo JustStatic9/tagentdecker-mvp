@@ -614,4 +614,6 @@ const places: any[] = [
   }
 ];
 
-export default places;
+// Ensure existing POI objects remain untouched but provide a default
+// `region` property for backwards compatibility and easy scaling later.
+export default places.map((p) => ({ region: p.region || "schweinfurt-stadt", ...p }));

@@ -2,8 +2,41 @@
 
 import places from "@/data/places";
 
-type Place = typeof places[number];
+// canonical Place type used across the engine. New fields are optional
+// for backwards compatibility with existing data objects.
+export interface Place {
+  id: string;
+  name: string;
+  description_short?: string;
+  coordinates: { lat: number; lon: number };
+  // existing fields (kept for compatibility)
+  category?: string;
+  subcategory?: string;
+  price_level?: number;
+  family_friendly?: boolean;
+  weather_dependency?: string;
+  time_of_day?: string[];
+  duration_estimate_min?: number;
+  generation_weight?: number;
 
+  // NEW optional standardized fields for the adventure engine
+  durationMinutes?: number;
+  recommendedStayMinutes?: number;
+  elevationGain?: number;
+  difficulty?: "easy" | "medium" | "hard";
+  suitableForKids?: boolean;
+  weatherDependency?: "sun" | "any" | "dry" | "indoor";
+  categoryType?: "activity" | "viewpoint" | "food" | "nature" | "culture";
+  carRequired?: boolean;
+  parkingInfo?: string;
+  region?: string; // e.g. schweinfurt-stadt | schweinfurt-landkreis
+  priorityScore?: number; // 1..5 general importance
+  priority?: number; // legacy fallback
+  suitableToCloseDay?: boolean; // prefers as last stop
+  spot_role?: string; // legacy field from raw data
+}
+
+// Basic Haversine distance in km
 export function calculateDistance(
   lat1: number,
   lon1: number,
@@ -16,14 +49,15 @@ export function calculateDistance(
 
   const a =
     Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * (Math.PI / 180)) *
-    Math.cos(lat2 * (Math.PI / 180)) *
-    Math.sin(dLon / 2) ** 2;
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) ** 2;
 
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
 
+// pick item weighted by generation_weight (fallback 1)
 export function weightedRandom(spots: Place[]): Place | null {
   if (!spots.length) return null;
 
@@ -37,10 +71,10 @@ export function weightedRandom(spots: Place[]): Place | null {
 
   for (const spot of spots) {
     running += spot.generation_weight || 1;
-    if (rand <= running) return spot;
+    if (rand <= running) return spot as Place;
   }
 
-  return spots[0];
+  return spots[0] as Place;
 }
 
 export function getCurrentTimeOfDay(): "morning" | "afternoon" | "evening" {
@@ -50,17 +84,20 @@ export function getCurrentTimeOfDay(): "morning" | "afternoon" | "evening" {
   return "evening";
 }
 
-// filter candidates within radius and by time of day
+// filter candidates within radius and by optional time of day
 export function candidatesNearby(
   lat: number,
   lon: number,
   radiusKm: number,
-  timeOfDay: string
+  timeOfDay?: string,
+  region?: string
 ) {
-  return places.filter((p) => {
+  return (places as Place[]).filter((p) => {
+    if (region && p.region && p.region !== region) return false;
+    // if place has no region, consider it eligible (backwards-compat)
     const d = calculateDistance(lat, lon, p.coordinates.lat, p.coordinates.lon);
-    return d <= radiusKm && p.time_of_day.includes(timeOfDay as any);
+    const timeOk = !timeOfDay || (p.time_of_day || []).includes(timeOfDay as any);
+    return d <= radiusKm && timeOk;
   });
 }
 
-export type { Place };
