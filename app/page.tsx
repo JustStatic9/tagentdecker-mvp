@@ -2,7 +2,11 @@
 
 import { useState } from "react";
 import { generateAdventurePlan, AdventureRequest, AdventurePlan } from "@/lib/adventureEngine";
-import { calculateDistance, Place } from "@/lib/tour";
+import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import { Input } from "@/components/ui/Input";
+import { Section } from "@/components/ui/Section";
+import { ResultsDisplay } from "@/components/ResultsDisplay";
 
 const moods = ["Genuss", "Natur", "Kultur", "Entspannt"];
 
@@ -11,7 +15,6 @@ export default function Home() {
   const [plan, setPlan] = useState<AdventurePlan | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [snackbar, setSnackbar] = useState<string | null>(null);
 
   const [startMode, setStartMode] = useState<"location" | "address">("location");
   const [addressInput, setAddressInput] = useState("");
@@ -33,7 +36,7 @@ export default function Home() {
     };
   }
 
-  // ==================== TOUR GENERATION via ENGINE ====================
+  // ==================== TOUR GENERATION ====================
   async function generateTour() {
     if (isLoading) return;
 
@@ -77,15 +80,13 @@ export default function Home() {
       }
 
       // ==================== CALL ADVENTURE ENGINE ====================
-      // Use "quick" mode for fast 3-4 stop generation on landing page
       const request: AdventureRequest = {
         startLocation: { lat, lon },
-        timeBudgetMinutes: 180, // will be overridden by quick mode
+        timeBudgetMinutes: 180,
         hasCar: false,
         weather: "any",
         participantsType: "couple",
         region: "schweinfurt-stadt",
-        mode: "quick", // Fixed quick mode for landing page
       };
 
       const generatedPlan = generateAdventurePlan(request);
@@ -106,194 +107,117 @@ export default function Home() {
     }
   }
 
-  // ==================== INTERACTIVE: REMOVE STOP ====================
-  function removeStop(idx: number) {
-    if (!plan) return;
-    const updatedStops = plan.stops.filter((_, i) => i !== idx);
-    setPlan({ ...plan, stops: updatedStops });
-    setSnackbar("Stopp entfernt");
-    setTimeout(() => setSnackbar(null), 3000);
-  }
-
-  // ==================== INTERACTIVE: REGENERATE FULL TOUR ====================
+  // ==================== REGENERATE ====================
   function regenerateTour() {
     generateTour();
   }
 
   // ==================== RENDER ====================
-  // Calculate totals from plan
-  let totalDistance = 0;
-  if (plan && startPoint && plan.stops.length) {
-    let prev = { lat: startPoint.lat, lon: startPoint.lon };
-    for (const s of plan.stops) {
-      const d = calculateDistance(prev.lat, prev.lon, s.coordinates.lat, s.coordinates.lon);
-      totalDistance += d;
-      prev = { lat: s.coordinates.lat, lon: s.coordinates.lon };
-    }
-  }
+  return (
+    <>
+      {/* Hero Section */}
+      <Section className="pt-16 pb-8">
+        <div className="space-y-6 text-center">
+          <h1 className="text-5xl sm:text-6xl font-bold leading-tight">
+            Entdecke<br />deine Region neu.
+          </h1>
+          <p className="text-lg text-zinc-600 max-w-2xl mx-auto">
+            Automatisch kuratierte Micro-Abenteuer in Schweinfurt – passgenau für deine Zeit.
+          </p>
+          <div className="pt-4">
+            <Button size="lg" onClick={generateTour} disabled={isLoading}>
+              {isLoading ? "Wird generiert..." : "Jetzt Tour generieren"}
+            </Button>
+          </div>
+        </div>
+      </Section>
 
-      return (
-        <main className="min-h-screen bg-zinc-50 p-4 sm:p-8">
-          <div className="max-w-2xl mx-auto">
-            <h1 className="text-3xl font-bold mb-6">Tagentdecker</h1>
-
-            {/* GENERATION PANEL */}
-            <div className="mb-10 p-6 bg-white rounded-2xl shadow-sm border">
-              <h2 className="text-lg font-semibold mb-6">
-                Dein nächstes Abendteuer
-              </h2>
-
-              {/* Mood Selection */}
-              <div className="flex flex-wrap gap-4 mb-6">
+      {/* Generator Card */}
+      <Section className="py-8">
+        <Card>
+          <div className="space-y-8">
+            {/* Mood Selection */}
+            <div>
+              <h3 className="text-sm font-semibold text-zinc-700 mb-4">Wie ist deine Stimmung?</h3>
+              <div className="flex flex-wrap gap-3">
                 {moods.map((mood) => (
                   <button
                     key={mood}
                     onClick={() => setSelectedMood(mood)}
-                    className={`px-4 py-2 rounded-lg border ${
+                    className={`px-5 py-2 rounded-lg font-medium transition-colors ${
                       selectedMood === mood
-                        ? "bg-black text-white border-black"
-                        : "bg-white border-gray-300"
+                        ? "bg-black text-white"
+                        : "bg-zinc-100 text-black hover:bg-zinc-200"
                     }`}
                   >
                     {mood}
                   </button>
                 ))}
               </div>
+            </div>
 
-              {/* Start Location Selection */}
-              <div className="mb-6">
-                <p className="text-sm font-medium mb-3">Startpunkt</p>
-
-                <div className="flex gap-3 mb-3">
-                  <button
-                    onClick={() => setStartMode("location")}
-                    className={`px-4 py-2 rounded-lg ${
-                      startMode === "location"
-                        ? "bg-black text-white"
-                        : "bg-white border"
-                    }`}
-                  >
-                    📍 Standort
-                  </button>
-
-                  <button
-                    onClick={() => setStartMode("address")}
-                    className={`px-4 py-2 rounded-lg ${
-                      startMode === "address"
-                        ? "bg-black text-white"
-                        : "bg-white border"
-                    }`}
-                  >
-                    🏙 Adresse
-                  </button>
-                </div>
-
-                {startMode === "address" && (
-                  <input
-                    type="text"
-                    value={addressInput}
-                    onChange={(e) => setAddressInput(e.target.value)}
-                    placeholder="z.B. Schweinfurt Marktplatz"
-                    className="w-full px-4 py-2 border rounded-lg"
-                  />
-                )}
+            {/* Start Location */}
+            <div className="border-t border-zinc-200 pt-6">
+              <h3 className="text-sm font-semibold text-zinc-700 mb-4">Startpunkt</h3>
+              <div className="flex gap-3 mb-4">
+                <button
+                  onClick={() => setStartMode("location")}
+                  className={`px-4 py-2 rounded-lg font-medium text-sm transition-colors ${
+                    startMode === "location"
+                      ? "bg-black text-white"
+                      : "bg-zinc-100 text-black hover:bg-zinc-200"
+                  }`}
+                >
+                  📍 Standort
+                </button>
+                <button
+                  onClick={() => setStartMode("address")}
+                  className={`px-4 py-2 rounded-lg font-medium text-sm transition-colors ${
+                    startMode === "address"
+                      ? "bg-black text-white"
+                      : "bg-zinc-100 text-black hover:bg-zinc-200"
+                  }`}
+                >
+                  🏙 Adresse
+                </button>
               </div>
 
-              <button
-                onClick={generateTour}
-                disabled={isLoading}
-                className="px-6 py-3 bg-black text-white rounded-xl disabled:opacity-50"
-              >
-                {isLoading ? "Wird generiert..." : "Lass uns was entdecken ✨"}
-              </button>
-
-              {errorMessage && (
-                <p className="mt-4 text-red-600 text-sm">{errorMessage}</p>
+              {startMode === "address" && (
+                <Input
+                  type="text"
+                  value={addressInput}
+                  onChange={(e) => setAddressInput(e.target.value)}
+                  placeholder="z.B. Schweinfurt Marktplatz"
+                />
               )}
             </div>
 
-            {/* PLAN DISPLAY */}
-            {plan && startPoint && plan.stops.length > 0 && (
-              <>
-                {/* Snackbar */}
-                {snackbar && (
-                  <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-black text-white px-4 py-2 rounded-lg shadow">
-                    {snackbar}
-                  </div>
-                )}
+            {/* Generate Button */}
+            <div className="flex justify-center pt-4 border-t border-zinc-200">
+              <Button size="lg" onClick={generateTour} disabled={isLoading}>
+                {isLoading ? "Wird generiert..." : "Lass uns was entdecken ✨"}
+              </Button>
+            </div>
 
-                {/* Summary Card */}
-                <div className="p-4 bg-white rounded-xl shadow border mb-6">
-                  <p className="mb-2">🕒 <strong>{plan.totalDuration} Minuten</strong></p>
-                  <p>📍 <strong>{totalDistance.toFixed(1)} km</strong> Gesamtdistanz</p>
-                  <p className="text-sm text-gray-600 mt-2">Auto: {Math.round(plan.driveTimeEstimate)} min</p>
-                </div>
-
-                {/* Stops Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                  {plan.stops.map((stop, index) => (
-                    <div
-                      key={stop.id}
-                      className="p-6 bg-white rounded-xl shadow relative"
-                    >
-                      {/* Action Buttons */}
-                      <div className="absolute top-3 right-3 flex gap-2 group">
-                        <button
-                          onClick={() => removeStop(index)}
-                          className="text-red-500 hover:text-red-700 text-lg"
-                        >
-                          ❌
-                        </button>
-                        <span className="absolute top-6 right-8 w-max px-2 py-1 text-xs bg-gray-100 rounded shadow invisible group-hover:visible whitespace-nowrap">
-                          Stopp löschen
-                        </span>
-                      </div>
-
-                      {/* Stop Title */}
-                      <h2 className="text-xl font-semibold mb-2">
-                        {index === 0
-                          ? "🥂 Einstieg"
-                          : index === 1
-                          ? "🍽 Hauptstopp"
-                          : "🌙 Ausklang"}
-                      </h2>
-
-                      {/* Stop Details */}
-                      <h3 className="font-bold mb-1">{stop.name}</h3>
-                      <p className="text-sm text-gray-600 mb-2">
-                        {stop.description_short || stop.category || "-"}
-                      </p>
-
-                      {/* Duration */}
-                      <p className="text-xs text-gray-500 mb-3">
-                        ⏱ ~{stop.durationMinutes || stop.duration_estimate_min || 45} min
-                      </p>
-
-                      {/* Google Maps Link */}
-                      <a
-                        href={`https://www.google.com/maps/search/?api=1&query=${stop.coordinates.lat},${stop.coordinates.lon}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-blue-600 underline hover:text-blue-800"
-                      >
-                        Auf Google Maps öffnen →
-                      </a>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Regenerate Button */}
-                <div className="mt-8 text-center">
-                  <button
-                    onClick={regenerateTour}
-                    className="px-6 py-2 bg-gray-200 text-black rounded-lg hover:bg-gray-300"
-                  >
-                    Andere Vorschläge 🔄
-                  </button>
-                </div>
-              </>
+            {/* Error Message */}
+            {errorMessage && (
+              <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                {errorMessage}
+              </div>
             )}
           </div>
-        </main>
-      );
-    }
+        </Card>
+      </Section>
+
+      {/* Results */}
+      {plan && (
+        <Section className="py-12">
+          <ResultsDisplay
+            plan={plan}
+            onRegenerate={regenerateTour}
+          />
+        </Section>
+      )}
+    </>
+  );
+}

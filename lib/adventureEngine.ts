@@ -32,11 +32,17 @@
  */
 
 import placesData from "@/data/places";
-import { calculateDistance, Place } from "./tour";
+import { calculateDistance, Place, weightedRandomDampened } from "./tour";
 
 type Participants = "couple" | "family" | "solo" | "friends";
 type Weather = "sun" | "rain" | "dry" | "any";
 type AdventureMode = "quick" | "advanced";
+
+// ==================================================================================
+// MODULE-LEVEL STATE: Anchor Rotation
+// ==================================================================================
+// Track the last used anchor to prevent repetition in consecutive generations
+let lastUsedAnchorId: string | null = null;
 
 export type AdventureRequest = {
   startLocation: { lat: number; lon: number };
@@ -166,6 +172,25 @@ function withinRadius(reqLat: number, reqLon: number, p: Place, radiusKm: number
   return calculateDistance(reqLat, reqLon, p.coordinates.lat, p.coordinates.lon) <= radiusKm;
 }
 
+// ==================================================================================
+// UTILITY: Array Shuffling (Fisher-Yates)
+// ==================================================================================
+function shuffleArray<T>(arr: T[]): T[] {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+// ==================================================================================
+// UTILITY: Detect if a place is an anchor
+// ==================================================================================
+function isAnchor(p: Partial<Place>): boolean {
+  return p.spot_role === "anchor";
+}
+
 // exported helpers for testability
 export function estimateDriveTime(a: {lat:number;lon:number}, b: {lat:number;lon:number}): number {
   // drive time estimate = distance(km) / 60 km/h * 60 => minutes
@@ -269,10 +294,22 @@ export function generateAdventurePlan(req: AdventureRequest): AdventurePlan {
   const effectiveRadius = getEffectiveRadius(normalizedReq);
 
   // ==================== PHASE 3: Filter Candidates by Region ====================
-  const raw = (placesData as Place[]).filter((p:any) => {
+  let raw = (placesData as Place[]).filter((p:any) => {
     if (p.region && p.region !== region) return false;
+    // Anchor rotation: exclude last used anchor if it exists and there are alternatives
+    if (lastUsedAnchorId && isAnchor(p) && p.id === lastUsedAnchorId) {
+      return false; // Exclude last anchor temporarily
+    }
     return true;
   });
+
+  // Fallback: if no candidates remain (all are excluded anchors), allow full list
+  if (raw.length === 0) {
+    raw = (placesData as Place[]).filter((p:any) => {
+      if (p.region && p.region !== region) return false;
+      return true;
+    });
+  }
 
   // ==================== PHASE 4: Apply Filters (Weather + Participants) ====================
   const rejectedByDistanceCount = raw.reduce((acc, p) => acc + (withinRadius(normalizedReq.startLocation.lat, normalizedReq.startLocation.lon, p, effectiveRadius) ? 0 : 1), 0);
@@ -284,8 +321,12 @@ export function generateAdventurePlan(req: AdventureRequest): AdventurePlan {
 
   const rejectedByWeatherCount = raw.length - prelim.length - rejectedByDistanceCount;
 
-  // ==================== PHASE 5: Score All Candidates ====================
-  const scored = prelim.map((p:any) => ({ 
+  // ==================== PHASE 5: Shuffle Before Scoring ====================
+  // Randomize order to break deterministic ties and improve diversity
+  const shuffledPrelim = shuffleArray(prelim);
+
+  // ==================== PHASE 5B: Score All Candidates ====================
+  const scored = shuffledPrelim.map((p:any) => ({
     p, 
     s: scorePOI(p, { 
       weather: normalizedReq.weather, 
@@ -319,6 +360,14 @@ export function generateAdventurePlan(req: AdventureRequest): AdventurePlan {
   const chosen: Place[] = [];
   const reasoning: string[] = [];
 
+  // Extract used subcategories to enforce diversity
+  const usedSubcategories = new Set<string>();
+  for (const stop of chosen) {
+    if (stop.subcategory) {
+      usedSubcategories.add(stop.subcategory.toString().toLowerCase());
+    }
+  }
+
   // Helper: Pick best POI for a given narrative state with optional proximity constraint
   function pickForState(state: State, nearLocation: {lat:number;lon:number}|null, remainingCandidates: Place[], maxAllowedDurationForThisState?: number) {
     // Score all remaining candidates with dramaturgy emphasis for this state
@@ -335,32 +384,43 @@ export function generateAdventurePlan(req: AdventureRequest): AdventurePlan {
       }) 
     }));
 
-    // ==================== DRAMATURGY RULES ====================
-    // Filter by category preferences for each state
-    let filtered = withScores.filter(ws => {
-      const ct = mapCategoryToCategoryType(ws.p) || ws.p.categoryType;
-      
-      if (state === "START") {
-        // START: prefer activity/nature categories
-        if (!(ct === "activity" || ct === "nature")) return false;
-        // Duration constraint: START stop <= 40% of total budget
-        const dur = getDuration(ws.p);
-        if (maxAllowedDurationForThisState && dur > maxAllowedDurationForThisState) return false;
-      }
-      
-      if (state === "MIDDLE") {
-        // MIDDLE: prefer viewpoint/culture categories
-        if (!(ct === "viewpoint" || ct === "culture")) return false;
-      }
-      
-      if (state === "END") {
-        // END: prefer food/dining categories
-        if (!(ct === "food")) return false;
-        if (ws.p.suitableToCloseDay === false) return false;
-      }
-      
-      return true;
-    });
+    // ==================== DRAMATURGY RULES + SUBCATEGORY DIVERSITY ====================
+    // Filter by category preferences for each state, prefer diversity first
+    // Soft diversity constraint: prefer stops without duplicate subcategories
+    let filtered = withScores.
+      // First pass: apply dramaturgy rules
+      filter(ws => {
+        const ct = mapCategoryToCategoryType(ws.p) || ws.p.categoryType;
+        
+        if (state === "START") {
+          if (!(ct === "activity" || ct === "nature")) return false;
+          const dur = getDuration(ws.p);
+          if (maxAllowedDurationForThisState && dur > maxAllowedDurationForThisState) return false;
+        }
+        
+        if (state === "MIDDLE") {
+          if (!(ct === "viewpoint" || ct === "culture")) return false;
+        }
+        
+        if (state === "END") {
+          if (!(ct === "food")) return false;
+          if (ws.p.suitableToCloseDay === false) return false;
+        }
+        
+        return true;
+      }).
+      // Second pass: soft diversity constraint (prefer unique subcategories)
+      sort((a, b) => {
+        const aSubcat = a.p.subcategory?.toString().toLowerCase() || "";
+        const bSubcat = b.p.subcategory?.toString().toLowerCase() || "";
+        const aUsed = usedSubcategories.has(aSubcat) && aSubcat !== "";
+        const bUsed = usedSubcategories.has(bSubcat) && bSubcat !== "";
+        
+        // Prefer unused subcategories
+        if (aUsed !== bUsed) return aUsed ? 1 : -1;
+        // If both used or both unused, maintain score order
+        return b.s.score - a.s.score;
+      });
 
     // ==================== DISTANCE CONSTRAINT IN MIDDLE ====================
     // MIDDLE stop must be within effective radius from previous stop
@@ -372,14 +432,15 @@ export function generateAdventurePlan(req: AdventureRequest): AdventurePlan {
 
     if (!filtered.length) return null;
 
-    // Choose highest score, with distance as tie-breaker
-    filtered.sort((a,b) => 
-      b.s.score - a.s.score || 
-      (calculateDistance(normalizedReq.startLocation.lat, normalizedReq.startLocation.lon, a.p.coordinates.lat, a.p.coordinates.lon) - 
-       calculateDistance(normalizedReq.startLocation.lat, normalizedReq.startLocation.lon, b.p.coordinates.lat, b.p.coordinates.lon))
-    );
+    // Use weighted random selection (dampened) instead of deterministic top-1
+    // This adds controlled randomness while still respecting scores
+    const selectedPlace = weightedRandomDampened(filtered.map(f => f.p));
     
-    return filtered[0].p;
+    if (selectedPlace && isAnchor(selectedPlace)) {
+      lastUsedAnchorId = selectedPlace.id;
+    }
+    
+    return selectedPlace;
   }
 
   // ==================== PHASE 7: Time Management ====================
@@ -395,6 +456,9 @@ export function generateAdventurePlan(req: AdventureRequest): AdventurePlan {
   if (start) {
     chosen.push(start as Place);
     cumulativeDuration += getDuration(start);
+    if (isAnchor(start)) {
+      lastUsedAnchorId = start.id;
+    }
   }
 
   const middle = pickForState("MIDDLE", start ? (start.coordinates as {lat:number;lon:number}) : normalizedReq.startLocation, topCandidates.filter(p => !chosen.find(s=>s.id===p.id)));
@@ -455,6 +519,14 @@ export function generateAdventurePlan(req: AdventureRequest): AdventurePlan {
     scoringBreakdownPerStop,
   };
 
+  // Update last anchor for next generation
+  for (let i = chosen.length - 1; i >= 0; i--) {
+    if (isAnchor(chosen[i])) {
+      lastUsedAnchorId = chosen[i].id;
+      break;
+    }
+  }
+
   return {
     totalDuration: Math.round(totalDuration),
     driveTimeEstimate: Math.round(cumulativeDrive),
@@ -486,6 +558,8 @@ export function selectBestByScore(candidates: Place[], opts: {reference: {lat:nu
     return {p, score};
   });
   
-  scored.sort((a,b) => b.score - a.score);
-  return scored[0].p;
+  // Shuffle to break ties and improve diversity
+  const shuffled = scored.sort(() => Math.random() - 0.5);
+  shuffled.sort((a,b) => b.score - a.score);
+  return shuffled[0].p;
 }

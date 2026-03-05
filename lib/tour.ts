@@ -77,6 +77,32 @@ export function weightedRandom(spots: Place[]): Place | null {
   return spots[0] as Place;
 }
 
+// pick item with dampened weights (reduces bias towards high-weight items)
+export function weightedRandomDampened(spots: Place[]): Place | null {
+  if (!spots.length) return null;
+
+  // Dampen weights using square root to flatten the distribution
+  // This gives lower-weight items more chance while still preferring higher weights
+  const dampenedWeights = spots.map(s => {
+    const baseWeight = s.generation_weight || 1;
+    const dampenedWeight = Math.sqrt(baseWeight);
+    // Add ±10% random noise for additional variance
+    const noiseFactor = 0.9 + Math.random() * 0.2;
+    return dampenedWeight * noiseFactor;
+  });
+
+  const totalWeight = dampenedWeights.reduce((sum, w) => sum + w, 0);
+  const rand = Math.random() * totalWeight;
+  let running = 0;
+
+  for (let i = 0; i < spots.length; i++) {
+    running += dampenedWeights[i];
+    if (rand <= running) return spots[i] as Place;
+  }
+
+  return spots[0] as Place;
+}
+
 export function getCurrentTimeOfDay(): "morning" | "afternoon" | "evening" {
   const hour = new Date().getHours();
   if (hour < 12) return "morning";
